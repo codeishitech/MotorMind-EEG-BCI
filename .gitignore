@@ -1,0 +1,39 @@
+﻿# Raw EEG recordings
+dataset/
+
+# Generated numerical datasets and backups
+*.edf
+*.npz
+output/pre_expansion_backup_*/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local environment settings
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
+
+# Generated model-result backups
+output/model_results/*/_backups/
+
+# Nested Python cache folders
+**/__pycache__/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
