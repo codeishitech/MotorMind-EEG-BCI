@@ -12,7 +12,7 @@ Conditions Evaluated:
 
 Methodology:
   - Standardized CSP (n_components=2, log=True) + LDA (solver='svd') across all conditions.
-  - Strict 19-Fold Leave-One-Subject-Out (LOSO) cross-validation (zero data leakage).
+  - Strict participant-held-out Leave-One-Subject-Out (LOSO) cross-validation.
   - Paired parametric (paired t-test) and non-parametric (Wilcoxon signed-rank) testing.
   - Documented edge-effect analysis of epoch-level digital filtering.
 
@@ -23,11 +23,17 @@ Outputs (saved under output/model_results/frequency_band_comparison/):
   - all_bands_loso_predictions.csv
   - frequency_band_comparison.png
   - frequency_band_report.md
+
+Command-line options:
+  --dataset  Select the input NPZ.
+  --output   Select a separate output directory; non-empty directories are protected.
 """
 
 import os
 import sys
 import json
+import argparse
+import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -60,17 +66,33 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output", "model_results", "frequency_band_c
 def load_dataset(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing dataset at {path}")
-    data = np.load(path, allow_pickle=False)
-    return {
-        "X": data["X"],
-        "y": data["y"],
-        "participant_ids": data["participant_ids"],
-        "run_ids": data["run_ids"],
-        "channel_names": list(data["channel_names"]),
-        "sfreq": float(data["sfreq"]),
-        "epoch_duration_sec": float(data["epoch_duration_sec"]),
-        "units": str(data["units"])
-    }
+    with np.load(path, allow_pickle=False) as data:
+        return {
+            "X": data["X"],
+            "y": data["y"],
+            "participant_ids": data["participant_ids"],
+            "run_ids": data["run_ids"],
+            "channel_names": list(data["channel_names"]),
+            "sfreq": float(data["sfreq"]),
+            "epoch_duration_sec": float(data["epoch_duration_sec"]),
+            "units": str(data["units"])
+        }
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def display_path(path: str) -> str:
+    absolute_path = os.path.abspath(path)
+    try:
+        return os.path.relpath(absolute_path, BASE_DIR)
+    except ValueError:
+        return absolute_path
 
 
 def filter_epochs(X: np.ndarray, sfreq: float, l_freq: float, h_freq: float, band_name: str):
@@ -95,7 +117,7 @@ def filter_epochs(X: np.ndarray, sfreq: float, l_freq: float, h_freq: float, ban
 
 def run_loso_for_band(X_band: np.ndarray, y: np.ndarray, participant_ids: np.ndarray, run_ids: np.ndarray, band_key: str):
     """
-    Executes 19-fold LOSO cross-validation for a specific frequency band representation.
+    Executes one held-out fold per participant for a frequency-band representation.
     """
     unique_subjs = sorted(list(np.unique(participant_ids)))
     n_subjs = len(unique_subjs)
@@ -235,7 +257,7 @@ def run_loso_for_band(X_band: np.ndarray, y: np.ndarray, participant_ids: np.nda
 
 def compute_comparisons(band_results: dict):
     """
-    Computes paired statistical comparisons between frequency bands across the 19 participants.
+    Computes paired statistical comparisons across held-out participants.
     """
     ref_accs = band_results["8-30_Hz_ref"]["df_part"]["accuracy"].values
     mu_accs = band_results["8-13_Hz_mu"]["df_part"]["accuracy"].values
@@ -285,6 +307,42 @@ def compute_comparisons(band_results: dict):
     return comparisons
 
 
+def validate_loso_predictions(
+    band_results: dict,
+    participant_ids: np.ndarray,
+    n_trials: int,
+) -> None:
+    expected_indices = set(range(n_trials))
+    expected_participants = set(map(str, np.unique(participant_ids)))
+    for band_key, result in band_results.items():
+        trial_predictions = result["df_trials"]
+        participant_metrics = result["df_part"]
+        actual_indices = set(trial_predictions["trial_index"].astype(int))
+        actual_participants = set(participant_metrics["participant_id"].astype(str))
+        if len(trial_predictions) != n_trials or actual_indices != expected_indices:
+            raise RuntimeError(
+                f"{band_key} must contain exactly one held-out prediction for each "
+                f"of {n_trials} input trials."
+            )
+        if actual_participants != expected_participants:
+            raise RuntimeError(
+                f"{band_key} participant folds do not match the input cohort."
+            )
+        if participant_metrics["participant_id"].astype(str).duplicated().any():
+            raise RuntimeError(f"{band_key} contains duplicate participant folds.")
+        expected_trial_participants = np.asarray(participant_ids).astype(str)[
+            trial_predictions["trial_index"].to_numpy(dtype=int)
+        ]
+        actual_trial_participants = trial_predictions[
+            "participant_id"
+        ].astype(str).to_numpy()
+        if not np.array_equal(actual_trial_participants, expected_trial_participants):
+            raise RuntimeError(
+                f"{band_key} contains trial predictions assigned to the wrong "
+                "held-out participant."
+            )
+
+
 def generate_visualizations(band_results: dict, output_path: str):
     """
     Generates a publication-quality 2-panel figure:
@@ -298,6 +356,8 @@ def generate_visualizations(band_results: dict, output_path: str):
     ax0 = axes[0]
     conditions = ["8–30 Hz\n(Reference)", "8–13 Hz\n(Mu Band)", "13–30 Hz\n(Beta Band)"]
     keys = ["8-30_Hz_ref", "8-13_Hz_mu", "13-30_Hz_beta"]
+    n_trials = len(band_results["8-30_Hz_ref"]["df_trials"])
+    n_subjects = len(band_results["8-30_Hz_ref"]["df_part"])
 
     accs = [band_results[k]["summary"]["pooled_accuracy"] * 100 for k in keys]
     bal_accs = [band_results[k]["summary"]["pooled_balanced_accuracy"] * 100 for k in keys]
@@ -312,7 +372,11 @@ def generate_visualizations(band_results: dict, output_path: str):
 
     ax0.axhline(50.0, color="#7f8c8d", linestyle="--", linewidth=1.5, label="Chance Level (50.0%)")
     ax0.set_ylabel("Score (%)", fontsize=12, fontweight="bold")
-    ax0.set_title("A. Pooled Generalization Across Frequency Bands\n(N = 853 trials, 19 Participants)", fontsize=13, fontweight="bold", pad=12)
+    ax0.set_title(
+        f"A. Pooled Generalization Across Frequency Bands\n"
+        f"(N = {n_trials:,} trials, {n_subjects} participants)",
+        fontsize=13, fontweight="bold", pad=12
+    )
     ax0.set_xticks(x)
     ax0.set_xticklabels(conditions, fontsize=11, fontweight="bold")
     ax0.set_ylim(0, 85)
@@ -345,7 +409,7 @@ def generate_visualizations(band_results: dict, output_path: str):
     ax1.set_xticklabels(conditions, fontsize=11, fontweight="bold")
     ax1.set_ylabel("Participant Accuracy (%)", fontsize=12, fontweight="bold")
     ax1.set_title("B. Individual Participant Accuracy Trajectories\n(Showing Inter-Subject Variability)", fontsize=13, fontweight="bold", pad=12)
-    ax1.set_ylim(35, 95)
+    ax1.set_ylim(0, 100)
     ax1.legend(loc="upper right", frameon=True, fontsize=10)
     ax1.grid(axis="y", linestyle=":", alpha=0.6)
 
@@ -355,29 +419,170 @@ def generate_visualizations(band_results: dict, output_path: str):
     print(f"Visualization saved to: {output_path}")
 
 
-def generate_report(band_results: dict, comparisons: dict, output_path: str):
+def generate_report(
+    band_results: dict,
+    comparisons: dict,
+    output_path: str,
+    dataset_path: str,
+    dataset_hash: str,
+    dataset_metadata: dict,
+):
     """
     Generates a formal scientific markdown report detailing Experiment 1.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    b_ref = band_results["8-30_Hz_ref"]["summary"]
-    b_mu = band_results["8-13_Hz_mu"]["summary"]
-    b_beta = band_results["13-30_Hz_beta"]["summary"]
-
     c_mu = comparisons["ref_vs_mu"]
     c_b = comparisons["ref_vs_beta"]
     c_mb = comparisons["mu_vs_beta"]
+
+    ref_trials = band_results["8-30_Hz_ref"]["df_trials"]
+    participant_ids = sorted(
+        band_results["8-30_Hz_ref"]["df_part"]["participant_id"].astype(str).unique()
+    )
+    n_trials = len(ref_trials)
+    n_subjects = len(participant_ids)
+    class_counts = ref_trials["true_label"].value_counts().to_dict()
+    left_count = int(class_counts.get(0, 0))
+    right_count = int(class_counts.get(1, 0))
+    participant_list = ", ".join(participant_ids)
+    dataset_display = display_path(dataset_path)
+    output_display = display_path(output_path)
+
+    metric_rows = [
+        ("Pooled Accuracy", "pooled_accuracy", "fraction"),
+        ("Balanced Accuracy", "pooled_balanced_accuracy", "fraction"),
+        ("Macro Precision", "pooled_macro_precision", "fraction"),
+        ("Macro Recall", "pooled_macro_recall", "fraction"),
+        ("Macro F1-Score", "pooled_macro_f1", "fraction"),
+        ("ROC AUC", "pooled_roc_auc", "auc"),
+        ("Per-Participant Mean Acc", "participant_mean", "distribution"),
+        ("Per-Participant 95% CI", "participant_ci", "ci"),
+        ("Above Chance (>= 50%)", "above_chance", "count"),
+    ]
+    condition_keys = ["8-30_Hz_ref", "8-13_Hz_mu", "13-30_Hz_beta"]
+    condition_labels = [
+        "8–30 Hz Reference",
+        "8–13 Hz Mu",
+        "13–30 Hz Beta",
+    ]
+
+    def metric_value(condition_key, metric_key, display_type):
+        summary = band_results[condition_key]["summary"]
+        distribution = summary["participant_distribution"]
+        if metric_key == "pooled_accuracy":
+            cm = summary["confusion_matrix"]
+            correct = cm["tn"] + cm["tp"]
+            return f"{summary[metric_key] * 100:.2f}% ({correct}/{n_trials})"
+        if display_type == "fraction":
+            return f"{summary[metric_key] * 100:.2f}%"
+        if display_type == "auc":
+            return f"{summary[metric_key]:.4f}"
+        if display_type == "distribution":
+            return (
+                f"{distribution['mean_accuracy'] * 100:.2f}% ± "
+                f"{distribution['std_accuracy'] * 100:.2f}%"
+            )
+        if display_type == "ci":
+            low, high = distribution["ci95_accuracy"]
+            return f"[{low * 100:.2f}%, {high * 100:.2f}%]"
+        if display_type == "count":
+            count = distribution["above_chance_count"]
+            return f"{count} / {n_subjects} ({count / n_subjects * 100:.1f}%)"
+        raise ValueError(f"Unsupported report metric format: {display_type}")
+
+    metric_table = (
+        "| Metric | 8–30 Hz (Reference) | 8–13 Hz (Mu) | "
+        "13–30 Hz (Beta) | Best Condition |\n"
+        "| :--- | :---: | :---: | :---: | :---: |\n"
+    )
+    for label, metric_key, display_type in metric_rows:
+        if metric_key in ("participant_mean", "participant_ci", "above_chance"):
+            values = [
+                metric_value(key, metric_key, display_type)
+                for key in condition_keys
+            ]
+            if metric_key == "participant_ci":
+                raw_values = [
+                    -(
+                        band_results[key]["summary"]["participant_distribution"]
+                        ["ci95_accuracy"][1]
+                        - band_results[key]["summary"]["participant_distribution"]
+                        ["ci95_accuracy"][0]
+                    )
+                    for key in condition_keys
+                ]
+            else:
+                distribution_key = (
+                    "mean_accuracy"
+                    if metric_key == "participant_mean"
+                    else "above_chance_count"
+                )
+                raw_values = [
+                    band_results[key]["summary"]["participant_distribution"][
+                        distribution_key
+                    ]
+                    for key in condition_keys
+                ]
+        else:
+            values = [
+                metric_value(key, metric_key, display_type)
+                for key in condition_keys
+            ]
+            raw_values = [
+                band_results[key]["summary"][metric_key]
+                for key in condition_keys
+            ]
+        best_index = int(np.argmax(raw_values))
+        best_label = condition_labels[best_index]
+        formatted_values = [
+            f"**{value}**" if index == best_index else value
+            for index, value in enumerate(values)
+        ]
+        metric_table += (
+            f"| **{label}** | {formatted_values[0]} | {formatted_values[1]} | "
+            f"{formatted_values[2]} | **{best_label}** |\n"
+        )
+
+    comparison_specs = [
+        ("8–30 Hz vs. 8–13 Hz (Mu)", c_mu),
+        ("8–30 Hz vs. 13–30 Hz (Beta)", c_b),
+        ("8–13 Hz vs. 13–30 Hz", c_mb),
+    ]
+    comparison_table = (
+        "| Comparison | Mean Accuracy Difference | Paired t-test ($t, p$) | "
+        "Wilcoxon Signed-Rank ($W, p$) | Significant by t-test ($\\alpha=0.05$)? |\n"
+        "| :--- | :---: | :---: | :---: | :---: |\n"
+    )
+    for label, result in comparison_specs:
+        significance = "Yes" if result["significant_p05"] else "No"
+        comparison_table += (
+            f"| **{label}** | {result['mean_diff_accuracy'] * 100:+.2f}% | "
+            f"$t={result['t_stat']:.4f}, p={result['p_value_two_sided']:.4g}$ | "
+            f"$W={result['wilcoxon_stat']:.4g}, "
+            f"p={result['wilcoxon_p_value']:.4g}$ | **{significance}** |\n"
+        )
+
+    best_pooled_index = int(np.argmax([
+        band_results[key]["summary"]["pooled_accuracy"]
+        for key in condition_keys
+    ]))
+    best_pooled_label = condition_labels[best_pooled_index]
 
     report_content = f"""# MotorMind — Experiment 1: EEG Frequency-Band Comparison Report
 
 **Date of Execution:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  
 **Project Workspace:** `D:\\Move-left-or-right`  
-**Evaluation Scheme:** 19-Fold Leave-One-Subject-Out (LOSO) Cross-Validation  
+**Evaluation Scheme:** {n_subjects}-Fold Leave-One-Subject-Out (LOSO) Cross-Validation<br>
 **Feature Extractor:** Common Spatial Patterns (CSP, 2 components, log-variance power)  
 **Classifier:** Linear Discriminant Analysis (LDA, solver='svd')  
-**Cohort Scope:** Participants `S001` through `S019` ($N = 853\\text{{ trials}}$)  
-**Output Location:** `output/model_results/frequency_band_comparison/`
+**Input Shape:** {n_trials:,} epochs × {len(dataset_metadata["channel_names"])} channels × {dataset_metadata["X"].shape[-1]} samples<br>
+**Sampling Rate / Epoch Duration / Units:** {dataset_metadata["sfreq"]:g} Hz / {dataset_metadata["epoch_duration_sec"]:g} s / {dataset_metadata["units"]}<br>
+**Cohort Scope:** {n_subjects} retained participants ({participant_list}); {n_trials:,} trials<br>
+**Class Counts:** Left fist: {left_count:,}; right fist: {right_count:,}<br>
+**Dataset:** `{dataset_display}`<br>
+**Dataset SHA-256:** `{dataset_hash}`<br>
+**Output Location:** `{output_display}`
 
 ---
 
@@ -387,7 +592,7 @@ The objective of Experiment 1 is to evaluate whether isolating specific sensorim
 
 ### Neurophysiological Rationale:
 In cognitive neuroscience, voluntary imagined limb movement induces **Event-Related Desynchronization (ERD)**—a power decrease in sensorimotor rhythms over the contralateral motor cortex:
-1. **Mu Band ($8–13\\text{{ Hz}}$):** Sensorimotor arch rhythm, originating in the somatosensory cortex and primary motor strip. It reflects sensorimotor cortical activation.
+1. **Mu Band ($8–13\\text{{ Hz}}$):** Sensorimotor rhythm associated with cortical activation.
 2. **Beta Band ($13–30\\text{{ Hz}}$):** Motor cortical beta rhythm, closely tied to pyramidal tract corticospinal excitability and movement preparation.
 3. **Broadband Sensorimotor Band ($8–30\\text{{ Hz}}$):** The baseline reference spanning both Mu and Beta rhythms.
 
@@ -398,89 +603,81 @@ In cognitive neuroscience, voluntary imagined limb movement induces **Event-Rela
 ## 2. Experimental Methodology & Filter Settings
 
 ### Filter Implementation & Settings:
-Filtering was executed using MNE's standardized digital signal processing engine:
-- **Filter Type:** Zero-phase, non-causal FIR filter (`method='fir'`, `phase='zero'`).
-- **Filter Design:** Windowed time-domain sinc (`firwin`) with a Hamming window (passband ripple $0.0194$, stopband attenuation $53\\text{{ dB}}$).
-- **Edge Boundary Padding:** `pad='reflect_limited'` to eliminate jump discontinuities at epoch boundaries.
-
-### Filter Specifications:
-- **Broadband Reference ($8–30\\text{{ Hz}}$):** Filter length $265\\text{{ samples}}$ ($1.656\\text{{ s}}$), lower transition $2.0\\text{{ Hz}}$ (cutoff $7.0\\text{{ Hz}}$), upper transition $7.5\\text{{ Hz}}$ (cutoff $33.75\\text{{ Hz}}$).
-- **Mu Band ($8–13\\text{{ Hz}}$):** Filter length $265\\text{{ samples}}$ ($1.656\\text{{ s}}$), lower transition $2.0\\text{{ Hz}}$ (cutoff $7.0\\text{{ Hz}}$), upper transition $3.25\\text{{ Hz}}$ (cutoff $14.62\\text{{ Hz}}$).
-- **Beta Band ($13–30\\text{{ Hz}}$):** Filter length $163\\text{{ samples}}$ ($1.019\\text{{ s}}$), lower transition $3.25\\text{{ Hz}}$ (cutoff $11.38\\text{{ Hz}}$), upper transition $7.5\\text{{ Hz}}$ (cutoff $33.75\\text{{ Hz}}$).
+Filtering uses MNE's zero-phase FIR implementation (`firwin`, Hamming window,
+`reflect_limited` padding) at {dataset_metadata["sfreq"]:g} Hz. The 8–30 Hz reference
+is the existing broadband-filtered input. The Mu and Beta conditions apply
+additional 8–13 Hz and 13–30 Hz filters to the already-epoched input, separately
+for each {dataset_metadata["epoch_duration_sec"]:g}-second epoch.
 
 ### Methodological Limitation: Filter Edge Effects on Epochs
-Applying narrow-band FIR filters ($8–13\\text{{ Hz}}$) to short $4.0\\text{{ s}}$ ($640\\text{{ samples}}$) epochs introduces filter edge transients. With a filter length of $265\\text{{ samples}}$, roughly $\\pm 132\\text{{ samples}}$ ($\\sim 0.83\\text{{ s}}$) at the epoch onset and offset are affected by reflective boundary conditions. While boundary reflection mitigates edge cliffs, re-filtering segmented epochs carries unavoidable transient smoothing compared to filtering the original continuous stream.
+Filtering short 4-second epochs introduces edge transients. Reflective padding
+reduces boundary discontinuities but does not make epoch-wise filtering equivalent
+to filtering the original continuous recordings. In particular, narrow-band Mu
+filtering can be sensitive to edge effects; interpret the band comparison with
+this limitation in mind.
 
 ---
 
 ## 3. Empirical Results & Performance Comparison
 
-### Group-Level Performance Summary (853 Trials, 19 LOSO Folds):
+### Group-Level Performance Summary ({n_trials:,} Trials, {n_subjects} LOSO Folds):
 
-| Metric | 8–30 Hz (Reference) | 8–13 Hz (Mu Band) | 13–30 Hz (Beta Band) | Best Condition |
-| :--- | :---: | :---: | :---: | :---: |
-| **Pooled Accuracy** | **59.32%** (506/853) | 58.15% (496/853) | 58.26% (497/853) | **8–30 Hz Reference** |
-| **Balanced Accuracy** | **59.30%** | 58.13% | 58.25% | **8–30 Hz Reference** |
-| **Macro Precision** | **59.31%** | 58.14% | 58.26% | **8–30 Hz Reference** |
-| **Macro Recall** | **59.30%** | 58.13% | 58.25% | **8–30 Hz Reference** |
-| **Macro F1-Score** | **59.30%** | 58.12% | 58.24% | **8–30 Hz Reference** |
-| **ROC AUC** | **0.6274** | 0.6222 | 0.6054 | **8–30 Hz Reference** |
-| **Per-Subject Mean Acc** | **59.33% ± 9.05%** | 58.17% ± 9.46% | 58.27% ± 9.98% | **8–30 Hz Reference** |
-| **Per-Subject 95% CI** | **[54.96%, 63.69%]** | [53.61%, 62.73%] | [53.46%, 63.08%] | **8–30 Hz Reference** |
-| **Above Chance (≥ 50%)** | **18 / 19** (94.7%) | 17 / 19 (89.5%) | 17 / 19 (89.5%) | **8–30 Hz Reference** |
+{metric_table}
 
 ---
 
 ## 4. Paired Inferential Statistical Comparison
 
-To determine whether the observed accuracy differences between frequency bands reflect true physiological advantages or chance fluctuations, paired parametric and non-parametric tests were performed across the $N = 19$ held-out participant accuracy scores.
+Paired parametric and non-parametric tests compare held-out participant accuracy
+scores ($N = {n_subjects}$). These tests are exploratory; the three pairwise
+comparisons are not adjusted for multiple testing.
 
 ### Statistical Hypotheses:
 $H_0$: There is no difference in participant accuracy between conditions ($d = 0$).  
 $H_1$: A significant difference exists between conditions ($d \\neq 0$).
 
-| Comparison | Mean Accuracy Difference | Paired t-test ($t, p$) | Wilcoxon Signed-Rank ($W, p$) | Statistically Significant ($\alpha = 0.05$)? |
-| :--- | :---: | :---: | :---: | :---: |
-| **8–30 Hz vs. 8–13 Hz (Mu)** | $+1.16\\%$ | $t = 0.7791, p = 0.4460$ | $W = 68.5, p = 0.6768$ | **NO (Difference is not significant)** |
-| **8–30 Hz vs. 13–30 Hz (Beta)** | $+1.06\\%$ | $t = 1.1484, p = 0.2658$ | $W = 60.0, p = 0.2179$ | **NO (Difference is not significant)** |
-| **8–13 Hz vs. 13–30 Hz** | $-0.10\\%$ | $t = -0.0513, p = 0.9597$ | $W = 76.5, p = 0.8968$ | **NO (Performance is virtually identical)** |
+{comparison_table}
 
 ### Scientific Interpretation of Tests:
-1. **The reference broadband $8–30\\text{{ Hz}}$ achieved the highest numerical score across all metrics**, but the $+1.16\\%$ and $+1.06\\%$ differences over the sub-bands are **statistically non-significant ($p > 0.20$)**.
-2. **Neither Mu nor Beta sub-band improved upon the reference.** Restricting features to a single rhythm did not yield higher generalization accuracy.
-3. **Mu and Beta bands showed virtually identical overall efficacy** ($58.17\\%$ vs. $58.27\\%$, $p = 0.960$), indicating that both rhythms carry comparable motor-imagery information across the population.
+1. The highest pooled-accuracy condition was **{best_pooled_label}**.
+2. The table reports paired t-test and Wilcoxon p-values; a non-significant result
+   is not evidence that the conditions are equivalent.
+3. Pooled scores and participant-averaged scores answer different questions and
+   are both reported to make cohort-size variation visible.
 
 ---
 
 ## 5. In-Depth Discussion & Neurophysiological Interpretation
 
-### 1. Why Did Broadband (8–30 Hz) Outperform Individual Sub-Bands?
+### 1. Inter-Participant Variability
 - **Inter-Subject Rhythm Dominance:** Human motor imagery is heterogeneous. Some individuals display robust Mu ERD with weak Beta modulation; others exhibit pronounced Beta ERD with minimal Mu rhythm change. A broadband filter ($8–30\\text{{ Hz}}$) allows CSP spatial filters to simultaneously draw variance contrast from whichever rhythm is most prominent in a given participant.
-- **Spectral Degrees of Freedom:** Because our montage contains only 3 electrodes (`C3`, `Cz`, `C4`), spatial degrees of freedom are strictly limited ($m = 2$). Forcing CSP to operate within a narrow frequency slice removes spectral diversity that helps stabilize spatial covariance estimation across 18 training subjects.
+- **Spectral Degrees of Freedom:** The montage contains {len(dataset_metadata["channel_names"])} channels ({", ".join(dataset_metadata["channel_names"])}). Narrow-band filtering removes spectral content that may be useful for some participants.
 
 ### 2. Subject-Level Crossover Effects
-Examining individual trajectories reveals that individual participants exhibit divergent band preferences:
-- **Mu-Dominant Participants:** For participant `S008`, the Mu band achieved $68.89\\%$, outperforming both Beta ($55.56\\%$) and the reference ($60.00\\%$).
-- **Beta-Dominant Participants:** For participant `S014`, the Beta band achieved $64.44\\%$, substantially beating Mu ($48.89\\%$) and the reference ($53.33\\%$).
-- **Broadband Robustness:** For participants like `S007` ($80.00\\%$) and `S019` ($73.33\\%$), the broadband reference captured the combined power drops and delivered the strongest generalization.
+Participant-level accuracies and all held-out predictions are in the accompanying
+CSV files. Per-participant differences should be interpreted alongside the
+unequal number of trials contributed by each participant.
 
 ### 3. Filter Edge Considerations
-Narrowband filters require longer impulse responses. The $8–13\\text{{ Hz}}$ filter length of $265\\text{{ samples}}$ ($1.656\\text{{ s}}$) occupies $41.4\\%$ of the total $4.0\\text{{ s}}$ epoch. The resulting boundary smoothing slightly dampens transient onset dynamics, giving broadband filtering an additional numerical stability advantage on epoched data.
+The narrow-band filters can have longer effective impulse responses than the
+broadband input filter. Exact edge behavior depends on the filter design and epoch
+length; this experiment does not estimate performance on continuous-stream-filtered
+data.
 
 ---
 
 ## 6. Documented Limitations & Project Boundaries
 
-1. **No Data Leakage:** In all 3 conditions, filtering was applied identically, and CSP + LDA models were fitted strictly on training participants within each fold.
+1. **No Data Leakage:** The fixed filtering transforms each epoch independently; CSP and LDA are fitted strictly on training participants within each fold.
 2. **No Hyperparameter Tuning on Test Folds:** Filter cutoffs were chosen *a priori* based on standard neuroscience definitions ($8–13\\text{{ Hz}}$ and $13–30\\text{{ Hz}}$). No tuning was conducted to optimize test performance.
 3. **Preserved Baseline & Consolidated Data:** The original `motormind_all_participants_epochs.npz` and baseline directory `baseline_csp_lda/` were left completely intact.
-4. **Honest Significance Reporting:** We explicitly report that accuracy differences between bands are **not statistically significant**. We do not claim an improvement.
+4. **Honest Significance Reporting:** Statistical results are reported as computed; no improvement is claimed solely from the highest point estimate.
 
 ---
 
 ## 7. Conclusions & Next Experimental Recommendations
 
-1. **Conclusion:** Isolating pure Mu ($8–13\\text{{ Hz}}$) or pure Beta ($13–30\\text{{ Hz}}$) does **not improve** cross-subject motor-imagery classification over the $8–30\\text{{ Hz}}$ broadband reference band. The $8–30\\text{{ Hz}}$ band remains our primary baseline recommendation.
+1. **Conclusion:** {best_pooled_label} had the highest pooled accuracy in this run. Whether the conditions differ reliably should be judged from the paired tests above, not point estimates alone.
 2. **Next Step — Filter Bank CSP (FBCSP):** Rather than choosing *either* Mu *or* Beta, a multi-band Filter Bank CSP approach can extract spatial filters across multiple sub-bands simultaneously and use feature selection to dynamically pick the best features per subject.
 3. **Next Step — Per-Subject Standardization:** Inter-subject amplitude discrepancies remain a primary bottleneck across all frequency bands.
 """
@@ -492,17 +689,50 @@ Narrowband filters require longer impulse responses. The $8–13\\text{{ Hz}}$ f
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Compare three EEG frequency-band conditions with participant-held-out LOSO."
+    )
+    parser.add_argument(
+        "--dataset",
+        default=DATASET_PATH,
+        help="Input consolidated epochs NPZ (default: the project's consolidated dataset).",
+    )
+    parser.add_argument(
+        "--output",
+        default=OUTPUT_DIR,
+        help="Output directory. Non-empty directories are never overwritten.",
+    )
+    args = parser.parse_args()
+    dataset_path = os.path.abspath(args.dataset)
+    output_dir = os.path.abspath(args.output)
+
+    if os.path.exists(output_dir):
+        if not os.path.isdir(output_dir):
+            raise NotADirectoryError(f"Output path exists and is not a directory: {output_dir}")
+        if os.listdir(output_dir):
+            raise FileExistsError(
+                f"Output directory is not empty: {output_dir}. "
+                "Choose a new --output path to preserve existing results."
+            )
+
     print("=" * 80)
     print("MotorMind — Experiment 1: EEG Frequency-Band Comparison")
     print("=" * 80)
 
     # 1. Load dataset
-    ds = load_dataset(DATASET_PATH)
+    ds = load_dataset(dataset_path)
     X_raw = ds["X"]
     y = ds["y"]
     p_ids = ds["participant_ids"]
     r_ids = ds["run_ids"]
     sfreq = ds["sfreq"]
+    dataset_hash = sha256_file(dataset_path)
+    n_subjects = len(np.unique(p_ids))
+    print(
+        f"Dataset: {dataset_path}\n"
+        f"SHA-256: {dataset_hash}\n"
+        f"Loaded {len(y):,} trials from {n_subjects} participants."
+    )
 
     # 2. Filter data for the three conditions
     # Condition 1: 8-30 Hz (Reference broadband - already in X)
@@ -529,7 +759,7 @@ def main():
     print("-" * 80)
 
     for b_key, b_info in bands_data.items():
-        print(f"\n>>> Running 19-Fold LOSO for: {b_info['name']}")
+        print(f"\n>>> Running {n_subjects}-Fold LOSO for: {b_info['name']}")
         df_tr, df_p, summ = run_loso_for_band(b_info["X"], y, p_ids, r_ids, b_key)
 
         band_results[b_key] = {
@@ -548,6 +778,8 @@ def main():
             "band_name": b_info["name"],
             "pooled_accuracy": summ["pooled_accuracy"],
             "pooled_balanced_accuracy": summ["pooled_balanced_accuracy"],
+            "pooled_macro_precision": summ["pooled_macro_precision"],
+            "pooled_macro_recall": summ["pooled_macro_recall"],
             "pooled_macro_f1": summ["pooled_macro_f1"],
             "pooled_roc_auc": summ["pooled_roc_auc"],
             "mean_subject_accuracy": dist["mean_accuracy"],
@@ -560,27 +792,33 @@ def main():
 
         print(f"Done. Pooled Acc: {summ['pooled_accuracy']*100:.2f}%, Bal Acc: {summ['pooled_balanced_accuracy']*100:.2f}%, Mean Subj Acc: {dist['mean_accuracy']*100:.2f}% ± {dist['std_accuracy']*100:.2f}%")
 
+    validate_loso_predictions(band_results, p_ids, len(y))
+    print(
+        f"\nValidated exactly {len(y):,} unique held-out predictions per condition "
+        f"across {n_subjects} participants."
+    )
+
     # 3. Compute paired inferential statistics
     comparisons = compute_comparisons(band_results)
 
     # 4. Save results to output directory
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Summary CSV
     df_summary = pd.DataFrame(summary_rows)
-    summary_csv_path = os.path.join(OUTPUT_DIR, "frequency_band_summary.csv")
+    summary_csv_path = os.path.join(output_dir, "frequency_band_summary.csv")
     df_summary.to_csv(summary_csv_path, index=False)
     print(f"\nSaved summary CSV to: {summary_csv_path}")
 
     # Participant metrics CSV
     df_all_parts = pd.concat(all_part_records, ignore_index=True)
-    part_csv_path = os.path.join(OUTPUT_DIR, "per_participant_band_metrics.csv")
+    part_csv_path = os.path.join(output_dir, "per_participant_band_metrics.csv")
     df_all_parts.to_csv(part_csv_path, index=False)
     print(f"Saved participant metrics to: {part_csv_path}")
 
     # Trial predictions CSV
     df_all_trials = pd.concat(all_trials_records, ignore_index=True)
-    trials_csv_path = os.path.join(OUTPUT_DIR, "all_bands_loso_predictions.csv")
+    trials_csv_path = os.path.join(output_dir, "all_bands_loso_predictions.csv")
     df_all_trials.to_csv(trials_csv_path, index=False)
     print(f"Saved trial predictions to: {trials_csv_path}")
 
@@ -588,6 +826,36 @@ def main():
     overall_json_data = {
         "experiment_name": "frequency_band_comparison",
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset": {
+            "path": dataset_path,
+            "sha256": dataset_hash,
+            "n_trials": int(len(y)),
+            "n_participants": int(n_subjects),
+            "class_counts": {
+                "left_fist": int(np.sum(y == 0)),
+                "right_fist": int(np.sum(y == 1)),
+            },
+            "channel_names": ds["channel_names"],
+            "sampling_rate_hz": ds["sfreq"],
+            "epoch_duration_sec": ds["epoch_duration_sec"],
+            "units": ds["units"],
+        },
+        "evaluation": {
+            "scheme": "Leave-One-Subject-Out",
+            "folds": int(n_subjects),
+            "csp_components": 2,
+            "csp_log": True,
+            "lda_solver": "svd",
+            "frequency_conditions_hz": {
+                "8-30_Hz_ref": "existing broadband-filtered input",
+                "8-13_Hz_mu": [8.0, 13.0],
+                "13-30_Hz_beta": [13.0, 30.0],
+            },
+            "epochwise_filtering_caveat": (
+                "Mu and Beta are filtered separately on already-epoched data; "
+                "this is not equivalent to filtering continuous recordings."
+            ),
+        },
         "conditions_evaluated": {k: b["summary"] for k, b in band_results.items()},
         "paired_comparisons": comparisons,
         "environment": {
@@ -595,18 +863,25 @@ def main():
             "python": sys.version.split()[0]
         }
     }
-    json_path = os.path.join(OUTPUT_DIR, "overall_comparison_metrics.json")
+    json_path = os.path.join(output_dir, "overall_comparison_metrics.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(overall_json_data, f, indent=2)
     print(f"Saved comparison JSON to: {json_path}")
 
     # Plot
-    plot_path = os.path.join(OUTPUT_DIR, "frequency_band_comparison.png")
+    plot_path = os.path.join(output_dir, "frequency_band_comparison.png")
     generate_visualizations(band_results, plot_path)
 
     # Report
-    report_path = os.path.join(OUTPUT_DIR, "frequency_band_report.md")
-    generate_report(band_results, comparisons, report_path)
+    report_path = os.path.join(output_dir, "frequency_band_report.md")
+    generate_report(
+        band_results,
+        comparisons,
+        report_path,
+        dataset_path,
+        dataset_hash,
+        ds,
+    )
 
     print("\n" + "=" * 80)
     print("Experiment 1 Complete! All artifacts generated successfully.")

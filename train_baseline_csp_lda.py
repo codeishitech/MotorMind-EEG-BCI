@@ -25,6 +25,7 @@ Existing files with those names are copied to _backups/<timestamp>/ before overw
 Usage:
     python train_baseline_csp_lda.py
     python train_baseline_csp_lda.py --dataset PATH_TO.npz --output OUTPUT_DIR
+    python train_baseline_csp_lda.py --csp-components 3 --lda-shrinkage auto
 """
 
 from __future__ import annotations
@@ -232,19 +233,21 @@ def summarize(series: pd.Series) -> dict:
 # --------------------------------------------------------------------------------------
 # LOSO evaluation
 # --------------------------------------------------------------------------------------
-def make_csp() -> CSP:
-    return CSP(**CSP_PARAMS)
+def make_csp(params: dict | None = None) -> CSP:
+    return CSP(**(params if params is not None else CSP_PARAMS))
 
 
-def make_lda() -> LinearDiscriminantAnalysis:
-    return LinearDiscriminantAnalysis(**LDA_PARAMS)
+def make_lda(params: dict | None = None) -> LinearDiscriminantAnalysis:
+    return LinearDiscriminantAnalysis(**(params if params is not None else LDA_PARAMS))
 
 
-def run_loso(dataset: dict):
+def run_loso(dataset: dict, csp_params: dict | None = None, lda_params: dict | None = None):
     X, y = dataset["X"], dataset["y"]
     pids, rids = dataset["participant_ids"], dataset["run_ids"]
     participants = dataset["participants"]
     n_folds = len(participants)
+    csp_params = csp_params if csp_params is not None else CSP_PARAMS
+    lda_params = lda_params if lda_params is not None else LDA_PARAMS
 
     trial_rows, participant_rows = [], []
     print("\nLOSO folds")
@@ -270,9 +273,9 @@ def run_loso(dataset: dict):
 
         # --- Fit on training participants ONLY -------------------------------------
         try:
-            csp = make_csp()
+            csp = make_csp(csp_params)
             F_train = csp.fit_transform(X_train, y_train)
-            lda = make_lda()
+            lda = make_lda(lda_params)
             lda.fit(F_train, y_train)
         except Exception as exc:  # surface with fold context
             raise RuntimeError(f"Model fitting failed in fold {fold} (held out {held_out}): {exc}") from exc
@@ -350,9 +353,14 @@ def participant_level_test(df_part: pd.DataFrame) -> dict:
     return out
 
 
-def build_overall_metrics(dataset, df_pred, df_part, dataset_path, dataset_sha256) -> dict:
+def build_overall_metrics(
+    dataset, df_pred, df_part, dataset_path, dataset_sha256,
+    csp_params: dict | None = None, lda_params: dict | None = None,
+) -> dict:
     X, y = dataset["X"], dataset["y"]
     participants = dataset["participants"]
+    csp_params = csp_params if csp_params is not None else CSP_PARAMS
+    lda_params = lda_params if lda_params is not None else LDA_PARAMS
     n_trials = int(len(y))
     n_left, n_right = int((y == 0).sum()), int((y == 1).sum())
     n_recordings = int(len({(p, r) for p, r in zip(dataset["participant_ids"], dataset["run_ids"])}))
@@ -393,10 +401,10 @@ def build_overall_metrics(dataset, df_pred, df_part, dataset_path, dataset_sha25
             "preprocessing_as_documented_by_project": "8-30 Hz bandpass (not verified by this script)",
         },
         "model_configuration": {
-            "feature_extractor": "mne.decoding.CSP", "csp_parameters": CSP_PARAMS,
+            "feature_extractor": "mne.decoding.CSP", "csp_parameters": csp_params,
             "classifier": "sklearn.discriminant_analysis.LinearDiscriminantAnalysis",
-            "lda_parameters": LDA_PARAMS,
-            "hyperparameter_tuning": "none",
+            "lda_parameters": lda_params,
+            "hyperparameter_tuning": "none; parameters may be set explicitly by CLI",
         },
         "evaluation_protocol": {
             "method": "Leave-One-Subject-Out (LOSO) cross-validation",
@@ -595,7 +603,7 @@ def generate_report(overall: dict, df_part: pd.DataFrame, path: str, dataset_pat
     L.append("## 3. Model\n")
     L.append(f"- Features: `mne.decoding.CSP` with {overall['model_configuration']['csp_parameters']}")
     L.append(f"- Classifier: `LinearDiscriminantAnalysis` with {overall['model_configuration']['lda_parameters']}")
-    L.append("- No hyperparameters were tuned.\n")
+    L.append("- No hyperparameter search was run; any non-default parameters were set explicitly by CLI.\n")
 
     L.append("## 4. Pooled held-out results\n")
     L.append("Confusion matrix (rows = true class, columns = predicted class):\n")
@@ -682,7 +690,23 @@ def main():
     ap = argparse.ArgumentParser(description="MotorMind baseline: CSP + LDA, LOSO validation")
     ap.add_argument("--dataset", default=DEFAULT_DATASET, help="Path to consolidated epochs NPZ")
     ap.add_argument("--output", default=DEFAULT_OUTPUT, help="Output directory")
+    ap.add_argument("--csp-components", type=int, choices=(2, 3), default=CSP_PARAMS["n_components"],
+                    help="Number of CSP components (default: 2)")
+    ap.add_argument("--csp-regularization", choices=("none", "ledoit_wolf"), default="none",
+                    help="CSP covariance regularization (default: none)")
+    ap.add_argument("--lda-shrinkage", choices=("none", "auto"), default="none",
+                    help="Use automatic LDA shrinkage (default: none)")
     args = ap.parse_args()
+    csp_params = {
+        **CSP_PARAMS,
+        "n_components": args.csp_components,
+        "reg": None if args.csp_regularization == "none" else args.csp_regularization,
+    }
+    lda_params = (
+        {"solver": "lsqr", "shrinkage": "auto"}
+        if args.lda_shrinkage == "auto"
+        else LDA_PARAMS
+    )
 
     print("=" * 92)
     print("MotorMind baseline: CSP + LDA, Leave-One-Subject-Out cross-validation")
@@ -699,8 +723,10 @@ def main():
     print("Validation checks passed.")
 
     dataset_sha = sha256_of_file(args.dataset)
-    df_pred, df_part = run_loso(dataset)
-    overall = build_overall_metrics(dataset, df_pred, df_part, args.dataset, dataset_sha)
+    df_pred, df_part = run_loso(dataset, csp_params, lda_params)
+    overall = build_overall_metrics(
+        dataset, df_pred, df_part, args.dataset, dataset_sha, csp_params, lda_params
+    )
 
     pm = overall["pooled_heldout_metrics"]
     pl = overall["participant_level_summary"]
