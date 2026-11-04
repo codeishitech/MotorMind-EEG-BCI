@@ -134,6 +134,29 @@ Participants with accuracy above / equal to / below 50%: **59 / 0 / 10** of 69. 
 
 Class-specific recall across participants: Left_Fist mean 59.48% (SD 31.48%), Right_Fist mean 59.49% (SD 34.29%).
 
+### Participant-Level Performance Interpretation
+
+Participant-level performance shows substantial variability under Leave-One-Subject-Out evaluation.
+
+The lowest balanced accuracies were observed for:
+- S036: 40.32%
+- S018: 42.49%
+- S066: 44.76%
+- S038: 45.75%
+- S027: 46.67%
+
+S009 (48.81%) and S039 (49.21%) also performed close to chance.
+
+Several additional participants exhibited balanced accuracy around 50%, including S017, S037, S050, S059 and S068. Some of these folds showed predictions concentrated almost entirely in one class, indicating potential class-specific prediction bias.
+
+The overall dataset is relatively balanced (50.61% Left_Fist and 49.39% Right_Fist), and participant-level trial distributions are generally similar between classes. Therefore, class imbalance is not an obvious explanation for the observed variability.
+
+The current evaluation does not establish whether poor-performing participants have noisier EEG recordings or problematic C3/Cz/C4 channels. The existing quality checks do not include participant-wise artifact detection, bad-channel assessment or amplitude-outlier analysis.
+
+Further investigation should include participant-wise signal-quality analysis, channel-level statistics and confusion-matrix inspection before attributing performance differences to recording quality.
+
+These findings should be interpreted cautiously because each participant contributes a limited number of held-out trials.
+
 ## 6. Statistical assessment
 
 A one-sided Wilcoxon signed-rank test: per-participant balanced accuracy > 0.5 was performed over n = 64 participants with non-zero difference from 0.5 (W = 1930.00, p = 1.325e-09, alpha = 0.05); the test rejected the null hypothesis that participant balanced accuracy is centred at or below 0.5. Participants are treated as independent samples, but every fold's training set overlaps with the others, so independence is approximate. The test says nothing about individual participants and is not corrected for any other comparison.
