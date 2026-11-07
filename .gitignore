@@ -1,10 +1,10 @@
-﻿# Raw EEG recordings
+# Raw EEG recordings
 dataset/
 
 # Generated numerical datasets and backups
 *.edf
 *.npz
-output/pre_expansion_backup_*/
+output/
 
 # Python cache and compiled files
 __pycache__/

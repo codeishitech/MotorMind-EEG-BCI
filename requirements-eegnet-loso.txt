@@ -1,0 +1,2 @@
+# Optional dependency for run_eegnet_fusion_v2_loso.py
+torch>=2.6
