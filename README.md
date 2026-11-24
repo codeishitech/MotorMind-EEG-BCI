@@ -1,12 +1,15 @@
-MotorMind — EEG-Based Motor Imagery Classification
+🧠 MotorMind — EEG-Based Motor Imagery Classification
 
 A Research-Oriented Study of Left- and Right-Hand Motor Imagery Using Classical Machine Learning and Deep Learning
 
-"GitHub Repository" (https://github.com/codeishitech/MotorMind-EEG-BCI)
+""Python" (https://img.shields.io/badge/Python-3.10%2B-blue)" (https://www.python.org/)
+""PyTorch" (https://img.shields.io/badge/PyTorch-Deep%20Learning-ee4c2c)" (https://pytorch.org/)
+""MNE" (https://img.shields.io/badge/MNE-EEG%20Processing-purple)" (https://mne.tools/)
+""Status" (https://img.shields.io/badge/Status-Ongoing%20Research-orange)" (#10-future-work)
 
 ---
 
-1. Project Overview
+📌 1. Project Overview
 
 MotorMind is a research-oriented EEG-based motor imagery classification project that investigates whether electroencephalography (EEG) signals can distinguish between imagined left-hand and right-hand movements.
 
@@ -14,21 +17,21 @@ The project uses the PhysioNet EEG Motor Movement/Imagery Dataset (EEGMMIDB) and
 
 The primary objective is to investigate cross-subject motor imagery classification, particularly whether a model trained on multiple participants can generalize to previously unseen participants.
 
-The project follows an experimental workflow involving:
+Key Objectives
 
-- EEG dataset inspection and validation.
-- Signal preprocessing and trial extraction.
-- Signal quality assessment.
-- Classical machine learning baselines.
-- Frequency-band analysis.
+- EEG dataset inspection, validation and preprocessing.
+- Extraction of left-hand and right-hand motor imagery trials.
+- Development of conventional 3-channel and 64-channel EEG representations.
+- Implementation of classical machine learning baselines.
+- Investigation of frequency-specific EEG features.
 - Deep learning experimentation using EEGNet Fusion V2.
 - Cross-subject evaluation using Leave-One-Subject-Out (LOSO) validation.
 
-«Project Status: Research prototype. Experiments are ongoing. The current work focuses on offline EEG classification and cross-subject generalization. It is not yet a validated real-time brain-computer interface.»
+«Project Status: Ongoing research prototype. Current experiments focus on offline EEG classification and cross-subject generalization. The system is not yet a validated real-time brain-computer interface.»
 
 ---
 
-2. Dataset
+📂 2. Dataset
 
 The project uses the "PhysioNet EEG Motor Movement/Imagery Dataset" (https://physionet.org/content/eegmmidb/).
 
@@ -36,15 +39,14 @@ The dataset contains EEG recordings from participants performing different motor
 
 For this project, the relevant experimental conditions are:
 
-- T0: Resting state.
-- T1: Imagined left-hand movement.
-- T2: Imagined right-hand movement.
+Event| Description
+T0| Resting state
+T1| Imagined left-hand movement
+T2| Imagined right-hand movement
 
 The classification task focuses on distinguishing T1 from T2.
 
-Dataset processing summary
-
-The dataset audit and preprocessing pipeline produced the following results:
+Dataset Processing Summary
 
 Parameter| Result
 Valid EDF recordings| 201
@@ -55,59 +57,86 @@ Extracted 64-channel trials| 3,013
 Classification classes| Left vs Right
 Main motor channels| C3, Cz, C4
 
-The dataset contains 3,013 extracted trials in the 3-channel representation:
+3-channel representation:
 
-- Left imagery: 1,525 trials.
-- Right imagery: 1,488 trials.
+- Left imagery: 1,525 trials
+- Right imagery: 1,488 trials
 
-The consolidated 64-channel representation contains:
+64-channel representation:
 
-- Left imagery: 1,510 trials.
-- Right imagery: 1,503 trials.
+- Left imagery: 1,510 trials
+- Right imagery: 1,503 trials
 
 One trial was rejected during the 64-channel processing workflow. Nine recordings were identified as corrupt or truncated during dataset processing and auditing.
 
-The 64-channel representation preserves the spatial information available across the EEG electrode array, allowing experimentation beyond the conventional C3, Cz and C4 configuration.
+The 64-channel representation preserves spatial information across the EEG electrode array, allowing experimentation beyond the conventional C3, Cz and C4 configuration.
 
 ---
 
-3. EEG Preprocessing Pipeline
+⚙️ 3. EEG Preprocessing Pipeline
 
 A reproducible preprocessing workflow was developed to transform raw EDF recordings into structured EEG trials.
 
-Processing stages
+Processing Workflow
 
-1. Raw data inspection: Examine EDF files, recording metadata, sampling frequencies, channel information and event annotations.
+Raw EDF Recordings
+        |
+        v
+Dataset Inspection & Validation
+        |
+        v
+Signal Filtering
+        |
+        v
+Motor Imagery Trial Extraction
+        |
+        v
+Channel Selection
+   /           \
+  v             v
+3-Channel     64-Channel
+Representation Representation
+  \             /
+   v           v
+Signal Quality Assessment
+        |
+        v
+Dataset Consolidation
+        |
+        v
+Model Training & Evaluation
 
-2. Data integrity verification: Identify invalid, incomplete or corrupted recordings and verify trial-level consistency.
+Processing Stages
 
-3. Signal filtering: Apply band-pass filtering to isolate frequency components relevant to motor imagery.
+1. Raw Data Inspection: Examine EDF files, recording metadata, sampling frequencies, channel information and event annotations.
 
-4. Trial extraction: Extract EEG segments corresponding to left-hand and right-hand motor imagery events.
+2. Data Integrity Verification: Identify invalid, incomplete or corrupted recordings and verify trial-level consistency.
 
-5. Channel selection: Develop both a conventional three-channel representation and a consolidated 64-channel representation.
+3. Signal Filtering: Apply band-pass filtering to isolate frequency components relevant to motor imagery.
 
-6. Signal quality assessment: Inspect invalid values, flat signals, recording inconsistencies and trial-level signal characteristics.
+4. Trial Extraction: Extract EEG segments corresponding to left-hand and right-hand motor imagery events.
 
-7. Dataset consolidation: Maintain consistent channel ordering and trial-label alignment for subsequent model training.
+5. Channel Selection: Develop both a conventional three-channel representation and a consolidated 64-channel representation.
 
-64-channel processing
+6. Signal Quality Assessment: Inspect invalid values, flat signals, recording inconsistencies and trial-level signal characteristics.
 
-The 64-channel pipeline was introduced to investigate whether retaining more spatial information could support improved motor imagery classification.
+7. Dataset Consolidation: Maintain consistent channel ordering and trial-label alignment for subsequent model training.
 
-The consolidated representation has the shape:
+64-Channel Processing
 
-"(3013, 64, 640)"
+The consolidated 64-channel representation has the following shape:
+
+(3013, 64, 640)
 
 Where:
 
-- 3,013 represents the number of trials.
-- 64 represents the EEG channels.
-- 640 represents the number of time samples per trial.
+- "3013" represents the number of trials.
+- "64" represents the EEG channels.
+- "640" represents the number of time samples per trial.
 
 The channel ordering was standardized, and the positions of C3, Cz and C4 were verified against the corresponding three-channel representation.
 
-Preprocessing implementation
+Preprocessing Scripts
 
 - "preprocess_64ch_pipeline.py"
 - "preprocessing_pipeline.py"
@@ -120,19 +149,19 @@ Preprocessing implementation
 
 ---
 
-4. Experimental Approaches
+🧪 4. Experimental Approaches
 
 The project explores multiple classification approaches to establish baselines and investigate deep learning-based alternatives.
 
-4.1 CSP + LDA Baseline
+4.1 Common Spatial Patterns + Linear Discriminant Analysis (CSP-LDA)
 
-The initial classification approach combines:
+The initial classification approach combines two conventional machine learning techniques.
 
-Common Spatial Patterns (CSP):
+Common Spatial Patterns (CSP)
 
 CSP extracts spatial filters that maximize the difference in variance between two EEG classes.
 
-Linear Discriminant Analysis (LDA):
+Linear Discriminant Analysis (LDA)
 
 LDA uses the extracted features to classify trials into left-hand or right-hand motor imagery.
 
@@ -149,9 +178,10 @@ Frequency-specific experimentation was introduced to investigate the contributio
 
 The experiments examine:
 
-- Mu band: 8–13 Hz.
-- Beta band: 13–30 Hz.
-- Combined band: 8–30 Hz.
+Frequency Band| Range
+Mu| 8–13 Hz
+Beta| 13–30 Hz
+Combined| 8–30 Hz
 
 FBCSP provides a frequency-oriented classical machine learning comparison against the baseline approach.
 
@@ -168,7 +198,7 @@ EEGNet is a compact convolutional neural network architecture designed for EEG-b
 
 The V2 implementation extends the experimental framework beyond traditional CSP-based feature extraction and classification.
 
-The main objectives are:
+Research objectives:
 
 - Investigate deep learning-based EEG feature learning.
 - Explore spatial and temporal information in multichannel EEG recordings.
@@ -183,11 +213,11 @@ Implementation:
 - "run_eegnet_fusion_v2_loso.py"
 - "run_eegnet_random_split.py"
 
-Note: EEGNet Fusion V2 is an ongoing experimental implementation. Its final validated performance and comparison against FBCSP should be reported only after reviewing the corresponding evaluation outputs.
+«Note: EEGNet Fusion V2 is an ongoing experimental implementation. Its final validated performance and comparison against FBCSP should be reported only after reviewing the corresponding evaluation outputs.»
 
 ---
 
-5. Experimental Evaluation
+📊 5. Experimental Evaluation
 
 The project uses different evaluation protocols to investigate both within-dataset classification and cross-subject generalization.
 
@@ -212,9 +242,7 @@ In each iteration:
 
 This evaluation strategy is particularly relevant to BCI research because EEG signals can vary considerably between individuals.
 
-The project investigates whether classification models can learn patterns that generalize beyond the participants used during training.
-
-Evaluation metrics
+Evaluation Metrics
 
 The project considers the following metrics:
 
@@ -228,20 +256,18 @@ These metrics help assess both overall classification performance and difference
 
 ---
 
-6. Preliminary Experimental Results
+📈 6. Preliminary Experimental Results
 
 The following results summarize completed experiments. Results from different evaluation protocols should not be treated as directly interchangeable.
 
-6.1 CSP + LDA: Random Split
+6.1 CSP-LDA: Random Split
 
 Metric| Result
 Accuracy| 61.19%
 Balanced Accuracy| 61.20%
 ROC-AUC| 0.6799
 
-6.2 CSP + LDA: LOSO Baseline
-
-The existing LOSO baseline report records:
+6.2 CSP-LDA: LOSO Baseline
 
 Metric| Result
 Participants evaluated| 69
@@ -251,7 +277,7 @@ Balanced accuracy| 59.61%
 ROC-AUC| 0.6424
 Majority-class accuracy reference| 50.61%
 
-6.3 EEGNet Fusion V2: Random Split Experiment
+6.3 EEGNet Fusion: Random Split Experiment
 
 An initial EEGNet Fusion experiment using a random train-validation-test split produced:
 
@@ -264,8 +290,6 @@ These results represent an initial experiment and should not be interpreted as t
 
 6.4 FBCSP: LOSO Experiments
 
-The frequency-band experiments produced the following reported accuracy values:
-
 Configuration| Accuracy
 FBCSP baseline| 59.54%
 8–30 Hz reference| 59.61%
@@ -274,7 +298,7 @@ Beta band (13–30 Hz)| 59.94%
 
 The differences are relatively small. These results should be interpreted cautiously because the frequency-band experiments include an epoch-wise filtering consideration that requires further methodological verification.
 
-Results interpretation
+Results Interpretation
 
 The experiments demonstrate that motor imagery classification remains challenging when generalizing across different participants.
 
@@ -284,7 +308,7 @@ The results also highlight the importance of consistent preprocessing, validatio
 
 ---
 
-7. Repository Structure
+🗂️ 7. Repository Structure
 
 The repository contains the following major components:
 
@@ -320,24 +344,25 @@ MotorMind-EEG-BCI/
 ├── model_training_explained.md
 └── README.md
 
----
-
-8. Technologies and Libraries
-
-The project uses the following technologies:
-
-- Python: Core implementation.
-- MNE-Python: EEG data loading and signal processing.
-- NumPy: Numerical computation.
-- SciPy: Signal processing and filtering.
-- Pandas: Dataset organization and analysis.
-- Scikit-learn: Classical machine learning, feature extraction and evaluation.
-- PyTorch: Deep learning model implementation and training.
-- Matplotlib: Visualization and experimental analysis.
+Note: This is a logical overview of the major project components. Update it to match the exact files currently present in the repository.
 
 ---
 
-9. Current Limitations
+🛠️ 8. Technologies and Libraries
+
+Technology| Purpose
+Python| Core implementation
+MNE-Python| EEG data loading and signal processing
+NumPy| Numerical computation
+SciPy| Signal processing and filtering
+Pandas| Dataset organization and analysis
+Scikit-learn| Classical machine learning and evaluation
+PyTorch| Deep learning model implementation and training
+Matplotlib| Visualization and experimental analysis
+
+---
+
+⚠️ 9. Current Limitations
 
 Several challenges remain in EEG-based motor imagery classification:
 
@@ -349,15 +374,15 @@ Several challenges remain in EEG-based motor imagery classification:
 
 4. Dataset limitations: The experiments use prerecorded EEG data rather than live EEG acquisition.
 
-5. Deep learning performance: The EEGNet Fusion V2 implementation requires further evaluation, tuning and comparison under consistent validation conditions.
+5. Deep Learning Performance: The EEGNet Fusion V2 implementation requires further evaluation, tuning and comparison under consistent validation conditions.
 
-6. Experimental reproducibility: Additional verification of preprocessing, filtering and evaluation procedures is necessary before drawing stronger conclusions.
+6. Experimental Reproducibility: Additional verification of preprocessing, filtering and evaluation procedures is necessary before drawing stronger conclusions.
 
-7. Real-time deployment: The current implementation is an offline research prototype and does not yet establish real-time BCI performance.
+7. Real-Time Deployment: The current implementation is an offline research prototype and does not yet establish real-time BCI performance.
 
 ---
 
-10. Future Work
+🚀 10. Future Work
 
 The next stages of development include:
 
@@ -372,7 +397,7 @@ The next stages of development include:
 
 ---
 
-11. Conclusion
+📝 11. Conclusion
 
 MotorMind explores EEG-based motor imagery classification through a progressive experimental approach, beginning with classical machine learning methods and extending towards deep learning architectures.
 
@@ -386,6 +411,18 @@ MotorMind is an ongoing research and engineering project aimed at developing a d
 
 ---
 
-Dataset: "PhysioNet EEG Motor Movement/Imagery Dataset" (https://physionet.org/content/eegmmidb/)
+📚 12. References
+
+1. "PhysioNet — EEG Motor Movement/Imagery Dataset" (https://physionet.org/content/eegmmidb/)
+
+2. Lawhern, V. J., et al. (2018). EEGNet: A Compact Convolutional Neural Network for EEG-based Brain-Computer Interfaces. Journal of Neural Engineering. "DOI" (https://doi.org/10.1088/1741-2552/aace8c)
+
+3. "MNE-Python Documentation" (https://mne.tools/)
+
+4. "PyTorch Documentation" (https://pytorch.org/docs/stable/index.html)
+
+---
 
 Repository: "github.com/codeishitech/MotorMind-EEG-BCI" (https://github.com/codeishitech/MotorMind-EEG-BCI)
+
+Project: MotorMind — EEG-Based Motor Imagery Classification
